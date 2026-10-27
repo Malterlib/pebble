@@ -255,6 +255,13 @@ To **never** reject a valid nonce as invalid run:
 
 `PEBBLE_WFE_NONCEREJECT=0 pebble`
 
+The random rejections make a test that relies on a number of retries flaky. To
+instead reject a fixed number of valid nonces, the first ones received, set
+`PEBBLE_WFE_NONCEREJECT_FIRST`. E.g. to reject only the first two valid nonces
+run:
+
+`PEBBLE_WFE_NONCEREJECT=0 PEBBLE_WFE_NONCEREJECT_FIRST=2 pebble`
+
 ### Object Reuse
 
 The RFC allows for several objects to be re-used.

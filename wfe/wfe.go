@@ -24,6 +24,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -84,6 +85,14 @@ const (
 	// To have the WFE reject 15% of good nonces, run Pebble like:
 	//   PEBBLE_WFE_NONCEREJECT=15 pebble
 	badNonceEnvVar = "PEBBLE_WFE_NONCEREJECT"
+
+	// badNonceFirstEnvVar defines the environment variable name used to provide
+	// a number of good nonces to reject as if they were bad, the first ones
+	// received. Unlike PEBBLE_WFE_NONCEREJECT this is deterministic, so tests can
+	// check how many rejections in a row a client retries. To reject the first
+	// two good nonces and no others, run Pebble like:
+	//   PEBBLE_WFE_NONCEREJECT=0 PEBBLE_WFE_NONCEREJECT_FIRST=2 pebble
+	badNonceFirstEnvVar = "PEBBLE_WFE_NONCEREJECT_FIRST"
 
 	// By default when no PEBBLE_WFE_NONCEREJECT is set, what percentage of good
 	// nonces are rejected?
@@ -166,6 +175,7 @@ type WebFrontEndImpl struct {
 	db                *db.MemoryStore
 	nonce             *nonceMap
 	nonceErrPercent   int
+	nonceRejectFirst  *atomic.Int64
 	authzReusePercent int
 	ordersPerPage     int
 	va                *va.VAImpl
@@ -209,6 +219,12 @@ func New(
 	}
 	log.Printf("Configured to reject %d%% of good nonces", nonceErrPercent)
 
+	nonceRejectFirst := new(atomic.Int64)
+	if val, err := strconv.ParseInt(os.Getenv(badNonceFirstEnvVar), 10, 0); err == nil && val > 0 {
+		nonceRejectFirst.Store(val)
+		log.Printf("Configured to reject the first %d good nonces", val)
+	}
+
 	// Get authz reuse percent from the environment
 	authzReusePercent := defaultAuthzReuse
 	if val, err := strconv.ParseInt(os.Getenv(authzReuseEnvVar), 10, 0); err == nil &&
@@ -237,6 +253,7 @@ func New(
 		db:                db,
 		nonce:             newNonceMap(),
 		nonceErrPercent:   nonceErrPercent,
+		nonceRejectFirst:  nonceRejectFirst,
 		authzReusePercent: authzReusePercent,
 		ordersPerPage:     ordersPerPage,
 		va:                va,
@@ -246,6 +263,20 @@ func New(
 		retryAfterAuthz:   retryAfterAuthz,
 		retryAfterOrder:   retryAfterOrder,
 		caaIdentities:     caaIdentities,
+	}
+}
+
+// rejectFirstNonce is true for the first good nonces that are rejected
+// because of PEBBLE_WFE_NONCEREJECT_FIRST.
+func (wfe *WebFrontEndImpl) rejectFirstNonce() bool {
+	for {
+		left := wfe.nonceRejectFirst.Load()
+		if left <= 0 {
+			return false
+		}
+		if wfe.nonceRejectFirst.CompareAndSwap(left, left-1) {
+			return true
+		}
 	}
 }
 
@@ -945,8 +976,9 @@ func (wfe *WebFrontEndImpl) verifyJWS(
 	// Roll a random number between 0 and 100.
 	nonceRoll := rand.Intn(100)
 	// If the nonce is not valid OR if the nonceRoll was less than the
-	// nonceErrPercent, fail with an error
-	if !wfe.nonce.validNonce(nonce) || nonceRoll < wfe.nonceErrPercent {
+	// nonceErrPercent OR if it's one of the first good nonces to reject, fail
+	// with an error
+	if !wfe.nonce.validNonce(nonce) || nonceRoll < wfe.nonceErrPercent || wfe.rejectFirstNonce() {
 		return nil, acme.BadNonceProblem(fmt.Sprintf(
 			"JWS has an invalid anti-replay nonce: %s", nonce))
 	}
