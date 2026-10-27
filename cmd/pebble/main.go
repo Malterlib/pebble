@@ -4,11 +4,13 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/letsencrypt/pebble/v2/ca"
 	"github.com/letsencrypt/pebble/v2/cmd"
@@ -166,6 +168,34 @@ func main() {
 		}
 	} else {
 		logger.Print("Management interface is disabled")
+	}
+
+	// "unix:<path>" listens on a Unix socket. Its URLs have the host
+	// [UNIX:<path>], which clients such as Malterlib's connect to through the
+	// socket.
+	if socketPath, ok := strings.CutPrefix(c.Pebble.ListenAddress, "unix:"); ok {
+		// A socket file left by an earlier run would make the listen fail
+		if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+			cmd.FailOnError(err, "Removing the old Unix socket")
+		}
+		listener, err := net.Listen("unix", socketPath)
+		cmd.FailOnError(err, "Listening on the Unix socket")
+
+		// The client sends the Host header of the URL it connects with, such
+		// as localhost, so the socket's host is used instead, for the URLs the
+		// WFE returns and the JWS url it expects. Only on this listener, the
+		// management interface keeps the host of its own requests.
+		host := "[UNIX:" + socketPath + "]"
+		socketHandler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			request.Host = host
+			muxHandler.ServeHTTP(response, request)
+		})
+		logger.Printf("Listening on: %s\n", c.Pebble.ListenAddress)
+		logger.Printf("ACME directory available at: https://%s%s", host, wfe.DirectoryPath)
+		server := &http.Server{Handler: socketHandler, ReadHeaderTimeout: 30 * time.Second}
+		err = server.ServeTLS(listener, c.Pebble.Certificate, c.Pebble.PrivateKey)
+		cmd.FailOnError(err, "Calling ServeTLS()")
+		return
 	}
 
 	logger.Printf("Listening on: %s\n", c.Pebble.ListenAddress)

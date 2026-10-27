@@ -90,6 +90,11 @@ pebble -config ./test/config/pebble-config.json
 Afterwards you can access the Pebble server's ACME directory
 at `https://localhost:14000/dir`.
 
+To listen on a Unix socket instead of a TCP port, set `listenAddress` to
+`unix:<path>`. The URLs Pebble returns then have the host `[UNIX:<path>]`, with
+the path escaped, which clients such as Malterlib's connect to through the
+socket.
+
 ### Docker
 
 Pebble includes a [docker-compose](https://docs.docker.com/compose/) file that
